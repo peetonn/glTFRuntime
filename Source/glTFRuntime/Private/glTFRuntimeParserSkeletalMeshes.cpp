@@ -34,15 +34,24 @@ struct FglTFRuntimeSkeletalMeshContextFinalizer
 
 	~FglTFRuntimeSkeletalMeshContextFinalizer()
 	{
+		uint64 t = FPlatformTime::Cycles64();
+		UE_LOG(LogTemp, Log, TEXT("****** START ~FglTFRuntimeSkeletalMeshContextFinalizer()"));
 		FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady([this]()
 		{
 			if (SkeletalMeshContext->SkeletalMesh)
 			{
+				uint64 t = FPlatformTime::Cycles64();
+				UE_LOG(LogTemp, Log, TEXT("****** START FinalizeSkeletalMeshWithLODs()"));
+
 				SkeletalMeshContext->SkeletalMesh = SkeletalMeshContext->Parser->FinalizeSkeletalMeshWithLODs(SkeletalMeshContext);
+
+				UE_LOG(LogTemp, Log, TEXT("****** END FinalizeSkeletalMeshWithLODs() -- %ld"), FPlatformTime::Cycles64() - t);
 			}
 			AsyncCallback.ExecuteIfBound(SkeletalMeshContext->SkeletalMesh);
 		}, TStatId(), nullptr, ENamedThreads::GameThread);
 		FTaskGraphInterface::Get().WaitUntilTaskCompletes(Task);
+
+		UE_LOG(LogTemp, Log, TEXT("****** END ~FglTFRuntimeSkeletalMeshContextFinalizer() -- %ld"), FPlatformTime::Cycles64() - t);
 	}
 };
 
@@ -85,7 +94,9 @@ void FglTFRuntimeParser::ApplySkeletonBoneRotation(FReferenceSkeletonModifier& M
 	TArray<FTransform> BonesTransforms = Modifier.GetReferenceSkeleton().GetRefBonePose();
 
 	FTransform NewTransform = BonesTransforms[BoneIndex];
+
 	NewTransform.SetLocation(ParentRotation * NewTransform.GetLocation());
+
 
 	ParentRotation *= NewTransform.GetRotation();
 	NewTransform.SetRotation(FQuat::Identity);
@@ -158,8 +169,6 @@ void FglTFRuntimeParser::CopySkeletonRotationsFrom(FReferenceSkeleton& RefSkelet
 
 USkeletalMesh* FglTFRuntimeParser::CreateSkeletalMeshFromLODs(TSharedRef<FglTFRuntimeSkeletalMeshContext, ESPMode::ThreadSafe> SkeletalMeshContext)
 {
-	SkeletalMeshContext->SkeletalMesh->bEnablePerPolyCollision = SkeletalMeshContext->SkeletalMeshConfig.bPerPolyCollision;
-
 	if (SkeletalMeshContext->SkeletalMeshConfig.OverrideSkinIndex > INDEX_NONE)
 	{
 		SkeletalMeshContext->SkinIndex = SkeletalMeshContext->SkeletalMeshConfig.OverrideSkinIndex;
@@ -390,6 +399,7 @@ USkeletalMesh* FglTFRuntimeParser::CreateSkeletalMeshFromLODs(TSharedRef<FglTFRu
 
 		int32 MorphTargetIndex = 0;
 		int32 PointsBase = 0;
+		bool hasLoadedFaceMorphs = false;
 		for (FglTFRuntimePrimitive& Primitive : LOD.Primitives)
 		{
 			for (FglTFRuntimeMorphTarget& MorphTarget : Primitive.MorphTargets)
@@ -416,8 +426,19 @@ USkeletalMesh* FglTFRuntimeParser::CreateSkeletalMeshFromLODs(TSharedRef<FglTFRu
 				}
 				MorphTargetIndex++;
 
+				if (hasLoadedFaceMorphs)
+				{
+					MorphTargetName = "Teeth_" + MorphTargetName;
+				}
+
 				MorphTargetNames.Add(MorphTargetName);
 			}
+
+			if (Primitive.MorphTargets.Num() > 0)
+			{
+				hasLoadedFaceMorphs = true;
+			}
+
 			PointsBase += Primitive.Positions.Num();
 		}
 
@@ -661,14 +682,28 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 	int32 MorphTargetIndex = 0;
 #endif
 
+	uint64 t = FPlatformTime::Cycles64();
+	UE_LOG(LogTemp, Log, TEXT("****** ENTER FglTFRuntimeSkeletalMeshContextFinalizer() -- LODs.Num %d"), 
+		 SkeletalMeshContext->LODs.Num());
+
 	for (int32 LODIndex = 0; LODIndex < SkeletalMeshContext->LODs.Num(); LODIndex++)
 	{
+		uint64 it = FPlatformTime::Cycles64();
+		uint64 tt = it;
+		UE_LOG(LogTemp, Log, TEXT("****** ITER %d FglTFRuntimeSkeletalMeshContextFinalizer() -- %ld"),
+			LODIndex, it - t);
+		t = it;
+
 #if WITH_EDITOR
 		SkeletalMeshContext->SkeletalMesh->SaveLODImportedData(LODIndex, SkeletalMeshContext->LODs[LODIndex].ImportData);
 #endif
 		// LOD tuning
 
 		FSkeletalMeshLODInfo& LODInfo = SkeletalMeshContext->SkeletalMesh->AddLODInfo();
+
+		UE_LOG(LogTemp, Log, TEXT("****** ITER %d AddLODInfo -- %ld"),
+			LODIndex, FPlatformTime::Cycles64() - tt);
+
 		LODInfo.ReductionSettings.NumOfTrianglesPercentage = 1.0f;
 		LODInfo.ReductionSettings.NumOfVertPercentage = 1.0f;
 		LODInfo.ReductionSettings.MaxDeviationPercentage = 0.0f;
@@ -681,7 +716,11 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 			LODInfo.ScreenSize = SkeletalMeshContext->SkeletalMeshConfig.LODScreenSize[LODIndex];
 		}
 
-#if !WITH_EDITOR
+		UE_LOG(LogTemp, Log, TEXT("****** ITER %d LOD tuning -- %ld"),
+			LODIndex, FPlatformTime::Cycles64() - tt);
+		tt = FPlatformTime::Cycles64();
+
+#if 0 // !WITH_EDITOR
 		int32 BaseIndex = 0;
 		for (int32 PrimitiveIndex = 0; PrimitiveIndex < SkeletalMeshContext->LODs[LODIndex].Primitives.Num(); PrimitiveIndex++)
 		{
@@ -738,6 +777,11 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 			SkeletalMaterials[NewMatIndex].UVChannelData.bInitialized = true;
 			SkeletalMaterials[NewMatIndex].MaterialSlotName = FName(FString::Printf(TEXT("LOD_%d_Section_%d_%s"), LODIndex, MatIndex, *(SkeletalMeshContext->LODs[LODIndex].Primitives[MatIndex].MaterialName)));
 		}
+
+		UE_LOG(LogTemp, Log, TEXT("****** ITER %d MAT SETUP -- %ld"),
+			LODIndex, FPlatformTime::Cycles64() - tt);
+		tt = FPlatformTime::Cycles64();
+
 #if WITH_EDITOR
 		IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForRunningPlatform();
 #if ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION >= 27
@@ -750,7 +794,14 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 			return nullptr;
 		}
 #endif
+
+		UE_LOG(LogTemp, Log, TEXT("****** ITER %d BUILD MESH -- %ld"),
+			LODIndex, FPlatformTime::Cycles64() - tt);
 	}
+
+	UE_LOG(LogTemp, Log, TEXT("****** LOOP END FglTFRuntimeSkeletalMeshContextFinalizer() -- %ld"),
+		FPlatformTime::Cycles64() - t);
+	t = FPlatformTime::Cycles64();
 
 #if WITH_EDITOR
 	SkeletalMeshContext->SkeletalMesh->Build();
@@ -761,6 +812,10 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 	}
 #endif
 
+	UE_LOG(LogTemp, Log, TEXT("****** INIT MORPH TARGETS FglTFRuntimeSkeletalMeshContextFinalizer() -- %ld"),
+		FPlatformTime::Cycles64() - t);
+	t = FPlatformTime::Cycles64();
+
 	SkeletalMeshContext->SkeletalMesh->CalculateInvRefMatrices();
 
 	if (SkeletalMeshContext->SkeletalMeshConfig.bShiftBoundsByRootBone)
@@ -768,6 +823,10 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 		FVector RootBone = SkeletalMeshContext->SkeletalMesh->RefSkeleton.GetRefBonePose()[0].GetLocation();
 		SkeletalMeshContext->BoundingBox = SkeletalMeshContext->BoundingBox.ShiftBy(RootBone);
 	}
+
+	UE_LOG(LogTemp, Log, TEXT("****** CalculateInvRefMatrices() -- %ld"),
+		FPlatformTime::Cycles64() - t);
+	t = FPlatformTime::Cycles64();
 
 	SkeletalMeshContext->SkeletalMesh->SetImportedBounds(FBoxSphereBounds(SkeletalMeshContext->BoundingBox));
 
@@ -783,6 +842,10 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 		{
 			SkeletalMeshContext->SkeletalMesh->Skeleton->MergeAllBonesToBoneTree(SkeletalMeshContext->SkeletalMesh);
 		}
+
+		UE_LOG(LogTemp, Log, TEXT("****** SkeletalMeshContext->SkeletalMeshConfig.Skeleton == true -- %ld"),
+			FPlatformTime::Cycles64() - t);
+		t = FPlatformTime::Cycles64();
 	}
 	else
 	{
@@ -812,6 +875,10 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 			SkeletalSocket->RelativeScale = Pair.Value.Transform.GetScale3D();
 			SkeletalMeshContext->SkeletalMesh->Skeleton->Sockets.Add(SkeletalSocket);
 		}
+
+		UE_LOG(LogTemp, Log, TEXT("****** SkeletalMeshContext->SkeletalMeshConfig.Skeleton == false -- %ld"),
+			FPlatformTime::Cycles64() - t);
+		t = FPlatformTime::Cycles64();
 	}
 
 	if (SkeletalMeshContext->SkeletalMeshConfig.PhysicsBodies.Num() > 0)
@@ -853,6 +920,10 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 		}
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("****** SkeletalMeshContext->SkeletalMeshConfig.PhysicsBodies.Num() > 0 -- %ld"),
+		FPlatformTime::Cycles64() - t);
+	t = FPlatformTime::Cycles64();
+
 #if !WITH_EDITOR
 	SkeletalMeshContext->SkeletalMesh->PostLoad();
 #endif
@@ -876,6 +947,10 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 		}
 	}
 #endif
+
+	UE_LOG(LogTemp, Log, TEXT("****** REMAINDER -- %ld"),
+		FPlatformTime::Cycles64() - t);
+	t = FPlatformTime::Cycles64();
 
 	return SkeletalMeshContext->SkeletalMesh;
 }
