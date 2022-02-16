@@ -665,7 +665,7 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 
 	for (int32 LODIndex = 0; LODIndex < SkeletalMeshContext->LODs.Num(); LODIndex++)
 	{
-		SCOPED_NAMED_EVENT(FglTFRuntimeParser_BuildSkeletalMeshLOD, FColor::Cyan);
+		SCOPED_NAMED_EVENT(FglTFRuntimeParser_TuneLOD, FColor::Cyan);
 
 #if WITH_EDITOR
 		SkeletalMeshContext->SkeletalMesh->SaveLODImportedData(LODIndex, SkeletalMeshContext->LODs[LODIndex].ImportData);
@@ -695,6 +695,8 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 
 			for (FglTFRuntimeMorphTarget& MorphTargetData : Primitive.MorphTargets)
 			{
+				SCOPED_NAMED_EVENT(FglTFRuntimeParser_MorphTargetLODModelSetupLOD, FColor::Cyan);
+
 				FMorphTargetLODModel MorphTargetLODModel;
 				MorphTargetLODModel.NumBaseMeshVerts = Primitive.Indices.Num();
 				MorphTargetLODModel.SectionIndices.Add(PrimitiveIndex);
@@ -733,6 +735,8 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 
 		for (int32 MatIndex = 0; MatIndex < SkeletalMeshContext->LODs[LODIndex].Primitives.Num(); MatIndex++)
 		{
+			SCOPED_NAMED_EVENT(FglTFRuntimeParser_SkeletalMaterialSetupLOD, FColor::Cyan);
+
 			LODInfo.LODMaterialMap.Add(MatIndex);
 			
 #if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 27
@@ -744,18 +748,22 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 			SkeletalMaterials[NewMatIndex].UVChannelData.bInitialized = true;
 			SkeletalMaterials[NewMatIndex].MaterialSlotName = FName(FString::Printf(TEXT("LOD_%d_Section_%d_%s"), LODIndex, MatIndex, *(SkeletalMeshContext->LODs[LODIndex].Primitives[MatIndex].MaterialName)));
 		}
-#if WITH_EDITOR
-		IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForRunningPlatform();
-#if ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION >= 27
-		FSkeletalMeshBuildParameters SkeletalMeshBuildParameters(SkeletalMeshContext->SkeletalMesh, GetTargetPlatformManagerRef().GetRunningTargetPlatform(), LODIndex, false);
-		if (!MeshBuilderModule.BuildSkeletalMesh(SkeletalMeshBuildParameters))
-#else
-		if (!MeshBuilderModule.BuildSkeletalMesh(SkeletalMeshContext->SkeletalMesh, LODIndex, false))
-#endif
 		{
-			return nullptr;
-		}
+			SCOPED_NAMED_EVENT(FglTFRuntimeParser_BuildSkeletalMeshLOD, FColor::Cyan);
+
+#if WITH_EDITOR
+			IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForRunningPlatform();
+#if ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION >= 27
+			FSkeletalMeshBuildParameters SkeletalMeshBuildParameters(SkeletalMeshContext->SkeletalMesh, GetTargetPlatformManagerRef().GetRunningTargetPlatform(), LODIndex, false);
+			if (!MeshBuilderModule.BuildSkeletalMesh(SkeletalMeshBuildParameters))
+#else
+			if (!MeshBuilderModule.BuildSkeletalMesh(SkeletalMeshContext->SkeletalMesh, LODIndex, false))
 #endif
+			{
+				return nullptr;
+			}
+#endif
+		}
 	}
 
 #if WITH_EDITOR
@@ -766,25 +774,29 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 #else
 	if (bHasMorphTargets)
 	{
-		SCOPED_NAMED_EVENT(FglTFRuntimeParser_FinalizeSkeletalMeshWithLODs_InitMorphTargets, FColor::Cyan);
+		SCOPED_NAMED_EVENT(FglTFRuntimeParser_InitMorphTargets, FColor::Cyan);
 		SkeletalMeshContext->SkeletalMesh->InitMorphTargets();
 	}
 #endif
 
-	SkeletalMeshContext->SkeletalMesh->CalculateInvRefMatrices();
-
-	if (SkeletalMeshContext->SkeletalMeshConfig.bShiftBoundsByRootBone)
 	{
-		FVector RootBone = SkeletalMeshContext->SkeletalMesh->RefSkeleton.GetRefBonePose()[0].GetLocation();
-		SkeletalMeshContext->BoundingBox = SkeletalMeshContext->BoundingBox.ShiftBy(RootBone);
-	}
+		SCOPED_NAMED_EVENT(FglTFRuntimeParser_CalculateInvRefMatrices, FColor::Cyan);
 
-	SkeletalMeshContext->SkeletalMesh->SetImportedBounds(FBoxSphereBounds(SkeletalMeshContext->BoundingBox));
+		SkeletalMeshContext->SkeletalMesh->CalculateInvRefMatrices();
 
-	SkeletalMeshContext->SkeletalMesh->bHasVertexColors = false;
+		if (SkeletalMeshContext->SkeletalMeshConfig.bShiftBoundsByRootBone)
+		{
+			FVector RootBone = SkeletalMeshContext->SkeletalMesh->RefSkeleton.GetRefBonePose()[0].GetLocation();
+			SkeletalMeshContext->BoundingBox = SkeletalMeshContext->BoundingBox.ShiftBy(RootBone);
+		}
+
+		SkeletalMeshContext->SkeletalMesh->SetImportedBounds(FBoxSphereBounds(SkeletalMeshContext->BoundingBox));
+
+		SkeletalMeshContext->SkeletalMesh->bHasVertexColors = false;
 #if WITH_EDITOR
-	SkeletalMeshContext->SkeletalMesh->VertexColorGuid = SkeletalMeshContext->SkeletalMesh->bHasVertexColors ? FGuid::NewGuid() : FGuid();
+		SkeletalMeshContext->SkeletalMesh->VertexColorGuid = SkeletalMeshContext->SkeletalMesh->bHasVertexColors ? FGuid::NewGuid() : FGuid();
 #endif
+	}
 
 	if (SkeletalMeshContext->SkeletalMeshConfig.Skeleton)
 	{
@@ -793,17 +805,23 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 		SkeletalMeshContext->SkeletalMesh->Skeleton = SkeletalMeshContext->SkeletalMeshConfig.Skeleton;
 		if (SkeletalMeshContext->SkeletalMeshConfig.bMergeAllBonesToBoneTree)
 		{
+			SCOPED_NAMED_EVENT(FglTFRuntimeParser_MergeAllBonesToBoneTree, FColor::Cyan);
 			SkeletalMeshContext->SkeletalMesh->Skeleton->MergeAllBonesToBoneTree(SkeletalMeshContext->SkeletalMesh);
 		}
 	}
 	else
 	{
+		SCOPED_NAMED_EVENT(FglTFRuntimeParser_NewSkeletonSetup, FColor::Cyan);
+
 		if (CanReadFromCache(SkeletalMeshContext->SkeletalMeshConfig.SkeletonConfig.CacheMode) && SkeletonsCache.Contains(SkeletalMeshContext->SkinIndex))
 		{
+			SCOPED_NAMED_EVENT(FglTFRuntimeParser_SkeletonCacheRead, FColor::Cyan);
 			SkeletalMeshContext->SkeletalMesh->Skeleton = SkeletonsCache[SkeletalMeshContext->SkinIndex];
 		}
 		else
 		{
+			SCOPED_NAMED_EVENT(FglTFRuntimeParser_SkeletonCreate, FColor::Cyan);
+
 			SkeletalMeshContext->SkeletalMesh->Skeleton = NewObject<USkeleton>(GetTransientPackage(), NAME_None, RF_Public);
 			SkeletalMeshContext->SkeletalMesh->Skeleton->MergeAllBonesToBoneTree(SkeletalMeshContext->SkeletalMesh);
 
@@ -867,12 +885,16 @@ USkeletalMesh* FglTFRuntimeParser::FinalizeSkeletalMeshWithLODs(TSharedRef<FglTF
 		}
 	}
 
+	{
+		SCOPED_NAMED_EVENT(FglTFRuntimeParser_FinalizeSkeletalMeshWithLODs_SkeletalMeshPostLoad, FColor::Cyan);
 #if !WITH_EDITOR
-	SkeletalMeshContext->SkeletalMesh->PostLoad();
+		SkeletalMeshContext->SkeletalMesh->PostLoad();
 #endif
+	}
 
 	if (OnSkeletalMeshCreated.IsBound())
 	{
+		SCOPED_NAMED_EVENT(FglTFRuntimeParser_FinalizeSkeletalMeshWithLODs_OnSkeletalMeshCreated, FColor::Cyan);
 		OnSkeletalMeshCreated.Broadcast(SkeletalMeshContext->SkeletalMesh);
 	}
 
